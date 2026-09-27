@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -54,8 +55,56 @@ def data_dir() -> Path:
         path = hermes_home() / "plugin-data" / PLUGIN_NAME
     else:
         path = plugin_data_dir(PLUGIN_NAME)
+    _migrate_legacy_data(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _migrate_legacy_data(new_dir: Path) -> None:
+    """Move pre-existing state from the install dir to the new location, once.
+
+    Without this, upgrading would look like every candidate's evidence vanished:
+    the database would simply reappear empty under the new path while the real
+    history sat in ``<install dir>/data/evidence.sqlite``. Best-effort throughout
+    — never fail a run over a migration. ``backups/`` and ``logs/`` move as whole
+    directories, matching their new defaults; the database's contents move up into
+    the data dir itself, because that is where ``default_db_path()`` now looks.
+    """
+    legacy_home = hermes_home() / "plugins" / PLUGIN_NAME
+    if legacy_home.resolve() == new_dir.resolve():
+        return
+
+    legacy_data = legacy_home / "data"
+    if legacy_data.is_dir():
+        try:
+            new_dir.mkdir(parents=True, exist_ok=True)
+            for entry in legacy_data.iterdir():
+                target = new_dir / entry.name
+                if target.exists():
+                    continue  # never clobber what is already in place
+                shutil.move(str(entry), str(target))
+            # Only tidy up a real directory. A symlink here is an operator
+            # override (and is the shape this fix ships as on some installs):
+            # leave it in place, but still adopt its contents above.
+            if not legacy_data.is_symlink() and not any(legacy_data.iterdir()):
+                legacy_data.rmdir()
+        except OSError:
+            pass
+
+    for name in ("backups", "logs"):
+        legacy = legacy_home / name
+        if not legacy.is_dir() or legacy.is_symlink():
+            continue  # a symlink here is a deliberate operator override
+        if not any(legacy.iterdir()):
+            continue
+        target = new_dir / name
+        if target.exists() and any(target.iterdir()):
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy), str(target))
+        except OSError:
+            pass
 
 
 def default_db_path() -> Path:

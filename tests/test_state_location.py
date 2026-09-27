@@ -130,3 +130,61 @@ def test_plugin_data_dir_api_is_used_when_available(tmp_path, monkeypatch):
     assert calls == ["curator-evolver"], calls
     assert resolved == expected.resolve()
     assert home / "plugins" not in resolved.parents
+
+
+def test_legacy_state_is_migrated_on_first_use(tmp_path, monkeypatch):
+    """An upgrade must not look like the evidence history vanished."""
+    home = tmp_path / ".hermes"
+    install = home / "plugins" / "curator-evolver"
+    (install / "data").mkdir(parents=True)
+    (install / "data" / "evidence.sqlite").write_bytes(b"legacy-history")
+    (install / "backups").mkdir()
+    (install / "backups" / "skill.md").write_text("v1")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_CURATOR_EVOLVER_DB", raising=False)
+
+    resolved = paths.data_dir().resolve()
+
+    # The DB moves up into the data dir itself: that is where default_db_path() looks.
+    assert (resolved / "evidence.sqlite").read_bytes() == b"legacy-history"
+    assert (resolved / "backups" / "skill.md").read_text() == "v1"
+    assert not (install / "data" / "evidence.sqlite").exists()
+    assert not (install / "backups" / "skill.md").exists()
+    assert paths.default_db_path() == resolved / "evidence.sqlite"
+
+
+def test_migration_never_clobbers_a_populated_destination(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    install = home / "plugins" / "curator-evolver"
+    (install / "data").mkdir(parents=True)
+    (install / "data" / "evidence.sqlite").write_bytes(b"old")
+    new = home / "plugin-data" / "curator-evolver"
+    new.mkdir(parents=True)
+    (new / "evidence.sqlite").write_bytes(b"new")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_CURATOR_EVOLVER_DB", raising=False)
+
+    paths.data_dir()
+
+    assert (new / "evidence.sqlite").read_bytes() == b"new", "must not clobber"
+    assert (install / "data" / "evidence.sqlite").read_bytes() == b"old", "must not delete"
+
+
+def test_migration_leaves_a_symlinked_install_dir_alone(tmp_path, monkeypatch):
+    """A symlinked install dir is a deliberate operator override, not legacy state."""
+    home = tmp_path / ".hermes"
+    install = home / "plugins" / "curator-evolver"
+    real = home / "plugin-data" / "curator-evolver"
+    (real / "data").mkdir(parents=True)
+    (real / "data" / "evidence.sqlite").write_bytes(b"real")
+    install.mkdir(parents=True)
+    (install / "data").symlink_to(real / "data")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_CURATOR_EVOLVER_DB", raising=False)
+
+    resolved = paths.data_dir().resolve()
+
+    # A symlinked install dir is an operator override: adopt its contents into the
+    # new location so history is reachable, but never delete the link itself.
+    assert (resolved / "evidence.sqlite").read_bytes() == b"real"
+    assert (install / "data").is_symlink(), "symlink must survive"
