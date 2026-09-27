@@ -29,6 +29,7 @@ from .guarded_apply import (
     register_support_file_in_manifest,
     sha256_file,
 )
+from .paths import data_dir, default_backup_dir
 from .reports import build_report
 from .restore_drill import (
     DRILL_STATE_FILENAME,
@@ -161,7 +162,7 @@ def _default_hermes_config_path() -> Path:
 
 
 def _default_backup_dir() -> Path:
-    return hermes_home() / "plugins" / "curator-evolver" / "backups"
+    return default_backup_dir()
 
 
 def _bounded(value: int, *, minimum: int, maximum: int) -> int:
@@ -1165,7 +1166,7 @@ def _write_launchd_plist(plist_path: Path, *, args: list[str], schedule: str) ->
     """Write a macOS LaunchAgent plist and return the canonical schedule."""
 
     canonical_schedule, schedule_block = _launchd_schedule_block(schedule)
-    log_dir = hermes_home() / "plugins" / "curator-evolver" / "logs"
+    log_dir = data_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     program_arguments = "\n".join(f"    <string>{html.escape(str(arg))}</string>" for arg in args)

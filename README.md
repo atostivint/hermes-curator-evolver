@@ -433,8 +433,17 @@ hermes plugins enable curator-evolver
 Default:
 
 ```text
-~/.hermes/plugins/curator-evolver/data/evidence.sqlite
+~/.hermes/plugin-data/curator-evolver/evidence.sqlite
 ```
+
+Guarded-apply backups default to `~/.hermes/plugin-data/curator-evolver/backups/`.
+
+State deliberately lives outside `~/.hermes/plugins/curator-evolver/`: that directory is
+the plugin install dir, which Hermes git-pulls on update and deletes on remove, and whose
+contents are hashed to decide whether the dependency environment is still in sync. An
+evidence database written there changes that hash on every turn, which leaves the install
+permanently out of sync. Under a profile, each profile gets its own
+`plugin-data/curator-evolver/`.
 
 Override:
 
