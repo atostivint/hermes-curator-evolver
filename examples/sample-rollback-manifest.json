@@ -16,7 +16,7 @@
     "writable": true
   },
   "evidence": {
-    "db_path": "/home/user/.hermes/plugins/curator-evolver/data/evidence.sqlite",
+    "db_path": "/home/user/.hermes/plugin-data/curator-evolver/evidence.sqlite",
     "session_ids": ["s-2026-05-14-001"]
   },
   "scheduler": {

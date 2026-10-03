@@ -20,9 +20,60 @@ After that:
 | --- | --- |
 | Plugin clone | `~/.hermes/plugins/curator-evolver` exists. |
 | CLI entrypoint | `hermes-curator-evolver` is available in the Hermes Python environment. |
-| Evidence DB | `~/.hermes/plugins/curator-evolver/data/evidence.sqlite` exists and includes recent backfilled session evidence. |
+| Evidence DB | `~/.hermes/plugin-data/curator-evolver/evidence.sqlite` exists and includes recent backfilled session evidence. |
 | User scheduler | Linux: `hermes-curator-evolver-auto.timer` runs daily. macOS: `~/Library/LaunchAgents/com.pingchesu.hermes-curator-evolver.auto.plist` is loaded. |
 | Hermes core | Unmodified. The plugin is removable without patching Hermes Agent source code. |
+
+## Existing installations
+
+Runtime state now belongs in `<HERMES_HOME>/plugin-data/curator-evolver/`:
+`evidence.sqlite` at the root, plus `backups/` and `logs/`. The active Hermes
+profile owns this directory; do not migrate another profile's state.
+`HERMES_CURATOR_EVOLVER_DB` remains an explicit database override and is not
+migrated automatically. Overrides must also stay outside the plugin source tree.
+
+**There is no automatic live migration.** On legacy data, startup raises an
+error naming the source and destination rather than moving SQLite files under
+old writers or silently creating a new, empty evidence history. Both populated
+locations are a conflict: do not merge their DB/WAL/SHM files.
+
+1. Stop **all** writers for this profile: the Hermes gateway, interactive CLI
+   sessions and curator's systemd timer/service or launchd job. Wait for running
+   work to exit. Updating files alone does not stop an old process using them.
+2. Back up the resolved legacy `data/`, `backups/` and `logs/` directories outside
+   the plugin tree. If `data/` is a symlink (including an existing operator
+   workaround), inspect and back up its target; do not consume the target while
+   another process may still use it. Keep the old plugin revision for rollback.
+3. With writers stopped, validate the legacy database with SQLite
+   `PRAGMA quick_check` and record the row counts in `tool_events`, `turn_events`
+   and `session_events`. Never discard a WAL/journal merely because the main DB
+   file exists. Prefer cleanly closing all connections before relocation.
+4. Move the **whole resolved legacy data directory** to
+   `<HERMES_HOME>/plugin-data/curator-evolver`. If the destination is an empty
+   directory left by a failed startup, remove only that empty directory first.
+   If it contains any files, stop and reconcile the two histories manually;
+   never overwrite or merge them. Across filesystems, copy the complete stopped
+   directory, verify it, and retain the source backup until acceptance.
+5. Move legacy `backups/` and `logs/` to the corresponding child directories of
+   the new root. An empty destination must be removed before moving a directory,
+   otherwise tools such as `shutil.move` can produce `backups/backups/`. Stop on
+   any populated destination, permission error or unexpected symlink.
+6. Remove only the now-obsolete legacy links/empty directories. Optionally leave
+   compatibility symlinks: old `data/` -> the new root, old `backups/` -> new
+   `backups/`, old `logs/` -> new `logs/`. Startup accepts links resolving to those
+   exact canonical destinations, but refuses links pointing at other evidence.
+7. Recheck SQLite integrity and the recorded row counts at the new location.
+   Sync Hermes dependencies, start the updated writers, then run
+   `hermes-curator-evolver status` and verify newly collected evidence is added to
+   the same database. On macOS, regenerate an existing launchd job with the same
+   original schedule/options so its persisted log paths move out of the install
+   tree too; changing the Python default alone cannot rewrite an installed plist.
+
+Rollback: stop every writer again. Keep the **current** database, including any
+new evidence, and repoint the old version's legacy paths at that same state (or
+move the complete stopped directories back). Do not restore an old snapshot over
+new evidence. A canonical compatibility symlink permits an old revision to use
+that same database without bringing mutable files back into the source tree.
 
 ## What autorun actually does
 
@@ -203,5 +254,5 @@ hermes plugins uninstall curator-evolver
 Remove local evidence/backups only if you want a clean slate:
 
 ```bash
-rm -rf ~/.hermes/plugins/curator-evolver/data ~/.hermes/plugins/curator-evolver/backups
+rm -rf ~/.hermes/plugin-data/curator-evolver
 ```

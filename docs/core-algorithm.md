@@ -47,7 +47,7 @@ Backfill is intentionally model-free. It does not infer missing tool calls from 
 
 ### Inputs
 
-- Evidence DB: active Hermes `<HERMES_HOME>/plugins/curator-evolver/data/evidence.sqlite`
+- Evidence DB: active Hermes `<HERMES_HOME>/plugin-data/curator-evolver/evidence.sqlite`
 - Historical source: active Hermes `<HERMES_HOME>/state.db` by default; legacy `session_*.json` only with `--sessions-dir`
 - Skills root: active Hermes `<HERMES_HOME>/skills`
 - Lookback window: default `--days 7`

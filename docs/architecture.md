@@ -41,7 +41,7 @@ The safety rule is simple: everything before `Apply` is non-mutating; `Apply` re
 | --- | --- |
 | Hermes runtime | Produces session/tool/skill activity signals. |
 | `curator-evolver` plugin | Registers observer hooks, a report tool, a slash command, and CLI entry points. |
-| SQLite evidence store | Keeps compact local evidence under `~/.hermes/plugins/curator-evolver/data/evidence.sqlite`. |
+| SQLite evidence store | Keeps compact local evidence under `~/.hermes/plugin-data/curator-evolver/evidence.sqlite`. |
 | Reports | Shows which skills/tools produced useful or problematic evidence. |
 | Skill audit | Read-only structural scan for oversized `SKILL.md`, missing `references/`, very long inline lines, and executable support files. |
 | Merge check | Read-only source→umbrella consolidation guard that blocks merges which would drop executable capacity such as `scripts/` or `.py`/`.sh` support files. |

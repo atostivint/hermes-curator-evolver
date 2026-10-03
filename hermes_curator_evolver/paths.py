@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -55,56 +54,37 @@ def data_dir() -> Path:
         path = hermes_home() / "plugin-data" / PLUGIN_NAME
     else:
         path = plugin_data_dir(PLUGIN_NAME)
-    _migrate_legacy_data(path)
+    _check_legacy_state(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _migrate_legacy_data(new_dir: Path) -> None:
-    """Move pre-existing state from the install dir to the new location, once.
+def _check_legacy_state(new_dir: Path) -> None:
+    """Refuse to hide existing evidence or relocate a database under live writers.
 
-    Without this, upgrading would look like every candidate's evidence vanished:
-    the database would simply reappear empty under the new path while the real
-    history sat in ``<install dir>/data/evidence.sqlite``. Best-effort throughout
-    — never fail a run over a migration. ``backups/`` and ``logs/`` move as whole
-    directories, matching their new defaults; the database's contents move up into
-    the data dir itself, because that is where ``default_db_path()`` now looks.
+    An old gateway, CLI or timer may still have the SQLite file open. Moving its
+    DB/WAL/SHM files separately can split writers or attach another database's WAL.
+    Migration therefore requires stopped producers; see docs/after-install.md.
+    A legacy symlink already pointing at the canonical destination needs no move.
     """
     legacy_home = hermes_home() / "plugins" / PLUGIN_NAME
-    if legacy_home.resolve() == new_dir.resolve():
-        return
-
-    legacy_data = legacy_home / "data"
-    if legacy_data.is_dir():
-        try:
-            new_dir.mkdir(parents=True, exist_ok=True)
-            for entry in legacy_data.iterdir():
-                target = new_dir / entry.name
-                if target.exists():
-                    continue  # never clobber what is already in place
-                shutil.move(str(entry), str(target))
-            # Only tidy up a real directory. A symlink here is an operator
-            # override (and is the shape this fix ships as on some installs):
-            # leave it in place, but still adopt its contents above.
-            if not legacy_data.is_symlink() and not any(legacy_data.iterdir()):
-                legacy_data.rmdir()
-        except OSError:
-            pass
-
-    for name in ("backups", "logs"):
+    for name, target in (("data", new_dir), ("backups", new_dir / "backups"),
+                         ("logs", new_dir / "logs")):
         legacy = legacy_home / name
-        if not legacy.is_dir() or legacy.is_symlink():
-            continue  # a symlink here is a deliberate operator override
-        if not any(legacy.iterdir()):
+        if legacy.resolve() == target.resolve():
             continue
-        target = new_dir / name
-        if target.exists() and any(target.iterdir()):
+        # lexists includes broken operator symlinks: do not silently replace
+        # missing external evidence with a fresh, empty store.
+        if not os.path.lexists(legacy):
             continue
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(legacy), str(target))
-        except OSError:
-            pass
+        if legacy.is_dir() and not any(legacy.iterdir()):
+            continue
+        raise RuntimeError(
+            f"Legacy curator state at {legacy} must be migrated to {target}. "
+            "Stop all curator writers (gateway, CLI and timers), back up the "
+            "state, and follow docs/after-install.md#existing-installations. "
+            "No legacy state was moved or overwritten."
+        )
 
 
 def default_db_path() -> Path:

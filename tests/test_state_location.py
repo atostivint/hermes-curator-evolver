@@ -11,11 +11,12 @@ These tests pin the paths so a future refactor cannot quietly move state back.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
+
+import pytest
 
 from hermes_curator_evolver import auto_evolve, paths
 
@@ -47,20 +48,42 @@ def test_default_backup_dir_is_outside_the_install_dir(tmp_path, monkeypatch):
 def test_writing_the_database_does_not_touch_the_install_dir(tmp_path, monkeypatch):
     """The regression that mattered: a write under the old default moved the stamp."""
     home = tmp_path / ".hermes"
-    (home / "plugins" / "curator-evolver").mkdir(parents=True)
+    install = home / "plugins" / "curator-evolver"
+    install.mkdir(parents=True)
+    (install / "pyproject.toml").write_text('[project]\nname = "curator"\n')
+    (install / "plugin.py").write_text("VERSION = 1\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("HERMES_CURATOR_EVOLVER_DB", raising=False)
 
+    import hashlib
     from hermes_curator_evolver.storage import EvidenceStore
 
+    def source_fingerprint():
+        digest = hashlib.sha256()
+        for source in sorted(install.rglob("*")):
+            if source.is_file():
+                digest.update(str(source.relative_to(install)).encode())
+                digest.update(source.read_bytes())
+        return digest.digest()
+
+    before = source_fingerprint()
     store = EvidenceStore(paths.default_db_path())
     store.record_tool_call(tool_name="terminal", args={"cmd": "true"}, result="ok",
                            session_id="s1")
+    (paths.default_backup_dir() / "skill.md").write_text("backup")
+    logs = paths.data_dir() / "logs"
+    logs.mkdir()
+    (logs / "run.log").write_text("runtime log")
 
     assert paths.default_db_path().is_file()
-    assert not (home / "plugins" / "curator-evolver" / "data").exists()
-    written = [p for p in (home / "plugins" / "curator-evolver").rglob("*") if p.is_file()]
-    assert written == [], written
+    assert not (install / "data").exists()
+    assert source_fingerprint() == before
+    (install / "plugin.py").write_text("VERSION = 2\n")
+    assert source_fingerprint() != before
+    after_code = source_fingerprint()
+    with (install / "pyproject.toml").open("a") as handle:
+        handle.write('dependencies = ["PyYAML>=6"]\n')
+    assert source_fingerprint() != after_code
 
 
 def test_env_override_still_wins(tmp_path, monkeypatch):
@@ -132,59 +155,117 @@ def test_plugin_data_dir_api_is_used_when_available(tmp_path, monkeypatch):
     assert home / "plugins" not in resolved.parents
 
 
-def test_legacy_state_is_migrated_on_first_use(tmp_path, monkeypatch):
-    """An upgrade must not look like the evidence history vanished."""
-    home = tmp_path / ".hermes"
-    install = home / "plugins" / "curator-evolver"
-    (install / "data").mkdir(parents=True)
-    (install / "data" / "evidence.sqlite").write_bytes(b"legacy-history")
-    (install / "backups").mkdir()
-    (install / "backups" / "skill.md").write_text("v1")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+@pytest.mark.parametrize("name", ["data", "backups", "logs"])
+def test_legacy_state_requires_offline_migration(tmp_path, monkeypatch, name):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    legacy = tmp_path / "plugins" / "curator-evolver" / name
+    legacy.mkdir(parents=True)
+    evidence = legacy / ("evidence.sqlite" if name == "data" else "original.txt")
+    evidence.write_bytes(b"history")
+    target = tmp_path / "plugin-data" / "curator-evolver"
+    # Reproduce the empty-destination case that used to nest backups/backups.
+    (target / "backups").mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="Stop all curator writers"):
+        paths.data_dir()
+    assert evidence.read_bytes() == b"history"
+    assert not (target / "evidence.sqlite").exists()
+    assert not (target / "backups" / "backups").exists()
+
+
+def test_conflicting_databases_and_wal_are_not_mixed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    legacy = tmp_path / "plugins" / "curator-evolver" / "data"
+    target = tmp_path / "plugin-data" / "curator-evolver"
+    legacy.mkdir(parents=True)
+    target.mkdir(parents=True)
+    (legacy / "evidence.sqlite").write_bytes(b"old")
+    (legacy / "evidence.sqlite-wal").write_bytes(b"old-wal")
+    (target / "evidence.sqlite").write_bytes(b"new")
+    with pytest.raises(RuntimeError, match="Legacy curator state"):
+        paths.default_db_path()
+    assert (legacy / "evidence.sqlite").read_bytes() == b"old"
+    assert (legacy / "evidence.sqlite-wal").read_bytes() == b"old-wal"
+    assert (target / "evidence.sqlite").read_bytes() == b"new"
+    assert not (target / "evidence.sqlite-wal").exists()
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_operator_symlink_is_not_consumed(tmp_path, monkeypatch, broken):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    legacy = tmp_path / "plugins" / "curator-evolver" / "data"
+    legacy.parent.mkdir(parents=True)
+    external = tmp_path / "local" / "curator-evolver" / "data"
+    if not broken:
+        external.mkdir(parents=True)
+        (external / "evidence.sqlite").write_bytes(b"history")
+    legacy.symlink_to(external, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="Legacy curator state"):
+        paths.data_dir()
+    assert legacy.is_symlink()
+    if not broken:
+        assert (external / "evidence.sqlite").read_bytes() == b"history"
+
+
+def test_live_wal_database_is_not_relocated(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    legacy = tmp_path / "plugins" / "curator-evolver" / "data"
+    legacy.mkdir(parents=True)
+    db = legacy / "evidence.sqlite"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("pragma journal_mode=wal")
+        conn.execute("create table evidence(value text)")
+        conn.execute("insert into evidence values ('before')")
+        conn.commit()
+        with pytest.raises(RuntimeError, match="Stop all curator writers"):
+            paths.data_dir()
+        conn.execute("insert into evidence values ('after')")
+        conn.commit()
+        assert conn.execute("select value from evidence order by rowid").fetchall() == [
+            ("before",), ("after",)]
+        assert db.is_file()
+        assert not (tmp_path / "plugin-data/curator-evolver/evidence.sqlite").exists()
+    finally:
+        conn.close()
+
+
+def test_offline_directory_migration_preserves_real_evidence(tmp_path, monkeypatch):
+    import sqlite3
+    from hermes_curator_evolver.storage import EvidenceStore
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_CURATOR_EVOLVER_DB", raising=False)
-
-    resolved = paths.data_dir().resolve()
-
-    # The DB moves up into the data dir itself: that is where default_db_path() looks.
-    assert (resolved / "evidence.sqlite").read_bytes() == b"legacy-history"
-    assert (resolved / "backups" / "skill.md").read_text() == "v1"
-    assert not (install / "data" / "evidence.sqlite").exists()
-    assert not (install / "backups" / "skill.md").exists()
-    assert paths.default_db_path() == resolved / "evidence.sqlite"
-
-
-def test_migration_never_clobbers_a_populated_destination(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    install = home / "plugins" / "curator-evolver"
-    (install / "data").mkdir(parents=True)
-    (install / "data" / "evidence.sqlite").write_bytes(b"old")
-    new = home / "plugin-data" / "curator-evolver"
-    new.mkdir(parents=True)
-    (new / "evidence.sqlite").write_bytes(b"new")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv("HERMES_CURATOR_EVOLVER_DB", raising=False)
-
-    paths.data_dir()
-
-    assert (new / "evidence.sqlite").read_bytes() == b"new", "must not clobber"
-    assert (install / "data" / "evidence.sqlite").read_bytes() == b"old", "must not delete"
+    legacy = tmp_path / "plugins" / "curator-evolver" / "data"
+    store = EvidenceStore(legacy / "evidence.sqlite")
+    store.record_tool_call(tool_name="terminal", args={}, result="before")
+    # Model the documented offline step after every writer has closed its DB.
+    target = tmp_path / "plugin-data" / "curator-evolver"
+    target.parent.mkdir(parents=True)
+    legacy.rename(target)
+    legacy.symlink_to(target, target_is_directory=True)
+    for _ in range(2):
+        assert paths.data_dir() == target
+    migrated = EvidenceStore()
+    migrated.record_tool_call(tool_name="terminal", args={}, result="after")
+    with sqlite3.connect(migrated.db_path) as conn:
+        assert conn.execute("select result_preview from tool_events order by id").fetchall() == [
+            ("before",), ("after",)]
+        assert conn.execute("pragma quick_check").fetchone() == ("ok",)
 
 
-def test_migration_leaves_a_symlinked_install_dir_alone(tmp_path, monkeypatch):
-    """A symlinked install dir is a deliberate operator override, not legacy state."""
-    home = tmp_path / ".hermes"
-    install = home / "plugins" / "curator-evolver"
-    real = home / "plugin-data" / "curator-evolver"
-    (real / "data").mkdir(parents=True)
-    (real / "data" / "evidence.sqlite").write_bytes(b"real")
-    install.mkdir(parents=True)
-    (install / "data").symlink_to(real / "data")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv("HERMES_CURATOR_EVOLVER_DB", raising=False)
+def test_active_profiles_keep_separate_state(tmp_path, monkeypatch):
+    homes = [tmp_path / "default", tmp_path / "profiles" / "other"]
+    resolved = []
+    for home in homes:
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        resolved.append(paths.data_dir())
+    assert resolved == [h / "plugin-data" / "curator-evolver" for h in homes]
 
-    resolved = paths.data_dir().resolve()
 
-    # A symlinked install dir is an operator override: adopt its contents into the
-    # new location so history is reachable, but never delete the link itself.
-    assert (resolved / "evidence.sqlite").read_bytes() == b"real"
-    assert (install / "data").is_symlink(), "symlink must survive"
+def test_empty_legacy_directories_do_not_block_fresh_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for name in ("data", "backups", "logs"):
+        (tmp_path / "plugins" / "curator-evolver" / name).mkdir(parents=True)
+    assert paths.data_dir() == tmp_path / "plugin-data" / "curator-evolver"

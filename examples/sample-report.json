@@ -1,7 +1,7 @@
 {
   "generated_at": "2026-05-09T00:00:00Z",
   "lookback_days": 14,
-  "db_path": "~/.hermes/plugins/curator-evolver/data/evidence.sqlite",
+  "db_path": "~/.hermes/plugin-data/curator-evolver/evidence.sqlite",
   "summary": {
     "total_tool_calls": 128,
     "total_skill_loads": 42,

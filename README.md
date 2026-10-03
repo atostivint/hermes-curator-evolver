@@ -390,7 +390,7 @@ hermes-curator-evolver uninstall-auto
 Plugin removal does not delete historical evidence by default. Remove it manually only if you want a clean slate:
 
 ```bash
-rm -rf ~/.hermes/plugins/curator-evolver/data ~/.hermes/plugins/curator-evolver/backups
+rm -rf ~/.hermes/plugin-data/curator-evolver
 ```
 
 ## Agent tool
@@ -437,6 +437,9 @@ Default:
 ```
 
 Guarded-apply backups default to `~/.hermes/plugin-data/curator-evolver/backups/`.
+Existing installations must follow the [offline migration procedure](docs/after-install.md#existing-installations)
+before resuming collection; startup never moves live databases or silently starts
+an empty database in place of existing evidence.
 
 State deliberately lives outside `~/.hermes/plugins/curator-evolver/`: that directory is
 the plugin install dir, which Hermes git-pulls on update and deletes on remove, and whose
